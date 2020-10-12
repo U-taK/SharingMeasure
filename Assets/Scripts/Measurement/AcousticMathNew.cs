@@ -40,12 +40,12 @@ class AcousticMathNew
             //FFT結果を平均化
             Complex samplelength = new Complex(sampleLength, 0);
             for (int fftIndex = 0; fftIndex < sampleLength; fftIndex++)
-         fft[micID][fftIndex] = Complex.Divide(fft[micID][fftIndex], samplelength);
+                fft[micID][fftIndex] = Complex.Divide(fft[micID][fftIndex], samplelength);
 
         }
 
         //FFTした時のサンプル範囲を求める
-        float df = (float)fs / (float)sampleLength;
+        float df = fs / sampleLength;
         int fftIndexMin = Mathf.CeilToInt(freq_range_min / df);
         int fftIndexMax = Mathf.FloorToInt(freq_range_max / df);
 
@@ -105,13 +105,13 @@ class AcousticMathNew
             }
         }
 
-        //インテンシティ計算(*sampleLength/4096を追加)
-        double i01 = sig01 * sampleLength / (2d * Math.PI * atmDensity * dr * 4096);
-        double i02 = sig02 * sampleLength / (2d * Math.PI * atmDensity * dr * 4096);
-        double i03 = sig03 * sampleLength / (2d * Math.PI * atmDensity * dr * 4096);
-        double i12 = sig12 * sampleLength / (2d * Math.PI * atmDensity * dr * 4096);
-        double i13 = sig13 * sampleLength / (2d * Math.PI * atmDensity * dr * 4096);
-        double i23 = sig23 * sampleLength / (2d * Math.PI * atmDensity * dr * 4096);
+        //インテンシティ計算
+        double i01 = sig01 / (2d * Math.PI * atmDensity * dr);
+        double i02 = sig02 / (2d * Math.PI * atmDensity * dr);
+        double i03 = sig03 / (2d * Math.PI * atmDensity * dr);
+        double i12 = sig12 / (2d * Math.PI * atmDensity * dr);
+        double i13 = sig13 / (2d * Math.PI * atmDensity * dr);
+        double i23 = sig23 / (2d * Math.PI * atmDensity * dr);
 
         //左手系ワールド座標(x,y,z)に変換
         double ix = -(i01 - i02 + i23 - i13 - (2 * i12)) / 4;
@@ -136,7 +136,7 @@ class AcousticMathNew
     /// <param name="bitSize">ビット数</param>
     /// <param name="input">入力</param>
     /// <param name="output">結果</param>
-    private static void FFT(int bitSize, Complex[] input, out Complex[] output)
+    public static void FFT(int bitSize, Complex[] input, out Complex[] output)
     {
         int dataSize = 1 << bitSize;
         //ビット反転
@@ -144,11 +144,11 @@ class AcousticMathNew
         output = new Complex[dataSize];
 
         //バタフライ演算のための置き換え
-        for(int i = 0; i < dataSize; i++)
+        for (int i = 0; i < dataSize; i++)
             output[i] = input[reverseBitArray[i]];
 
         //バタフライ演算
-        for(int stage = 1; stage<= bitSize; stage++)
+        for (int stage = 1; stage <= bitSize; stage++)
         {
             int butterflyDistance = 1 << stage;
             int numType = butterflyDistance >> 1;
@@ -156,9 +156,9 @@ class AcousticMathNew
             Complex w = new Complex(1.0, 0.0);
             Complex u = new Complex(System.Math.Cos(System.Math.PI / butterflySize), -System.Math.Sin(System.Math.PI / butterflySize));
 
-            for(int type = 0; type < numType; type++)
+            for (int type = 0; type < numType; type++)
             {
-                for(int j = type; j < dataSize; j += butterflyDistance)
+                for (int j = type; j < dataSize; j += butterflyDistance)
                 {
                     int jp = j + butterflySize;
                     Complex temp = new Complex(output[jp].Real * w.Real - output[jp].Imaginary * w.Imaginary, output[jp].Real * w.Imaginary + output[jp].Imaginary * w.Real);
@@ -171,6 +171,69 @@ class AcousticMathNew
             }
         }
     }
+
+    /// <summary>
+    /// 1次元IFFT
+    /// </summary>
+    public static void IFFT(
+        int bitSize,
+        Complex[] input,
+        out double[] outputReal
+        )
+    {
+        int dataSize = 1 << bitSize;
+        Complex[] output = new Complex[dataSize];
+        outputReal = new double[dataSize];
+        //複素共役をとってfft
+        for (int i = 0; i < dataSize; i++)
+        {
+            input[i] = Complex.Conjugate(input[i]);
+        }
+        FFT(bitSize, input, out output);
+        for (int i = 0; i < dataSize; i++)
+        {
+            outputReal[i] = Complex.Conjugate(output[i]).Real / (double)dataSize;
+        }
+
+    }
+
+    /// <summary>
+    /// Original filter function(2次のバンドパスフィルタ)
+    /// 周波数を変更する場合はc_freqを変更
+    /// </summary>
+    /// <param name="input">入力信号</param>
+    /// <param name="signals">出力信号</param>
+    /// <param name="sampleLength">出力信号長</param>
+    public static void BPFilter(double[] input, out double[] signals, int sampleLength)
+    {
+        int c_freq = 1000;
+        float bw = 1f / 3f;
+        int fs = 44100;
+        float omega = 2 * Mathf.PI * c_freq / fs;
+        float alpha = Mathf.Sin(omega) * (float)Math.Sinh(Mathf.Log(2) / 2 * bw * omega / Math.Sin(omega));
+
+        float a0 = 1 + alpha;
+        float b0 = alpha / a0;
+        float b1 = 0;
+        float b2 = -alpha / a0;
+        float a1 = (-2 * Mathf.Cos(omega)) / a0;
+        float a2 = (1 - alpha) / a0;
+
+        //filter実装
+        signals = new double[sampleLength];
+        signals[0] = b0 * input[0];
+        signals[1] = b0 * input[1] + b1 * input[0] - a1 * signals[0];
+        for (int m = 2; m < sampleLength; m++)
+        {
+
+            //y[n] = b0 * x[n] + b1 * x[n - 1] + b2 * x[n - 2] - a1 * y[n - 1] - a2 * y[n - 2]
+
+            signals[m] = b0 * input[m] + b1 * input[m - 1] + b2 * input[m - 2] -
+            a1 * signals[m - 1] - a2 * signals[m - 2];
+        }
+    }
+
+
 
     /// <summary>
     /// ビットを左右反転した配列を返す
